@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 from train import build_model
 import tensorflow_datasets as tfds
-from tfkerassurgeon.operations import delete_channels
+from kerassurgeon.operations import delete_channels
 
 def lw_biggest_layer(model):
     """

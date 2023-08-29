@@ -1,7 +1,6 @@
 import os
-import tensorflow as tf
-import tensorflow_datasets as tfds
 import pickle
+import tensorflow as tf
 
 def build_model(input_shape = (224, 224, 3), n_classes=10):
     vgg = tf.keras.applications.VGG16(include_top=False, input_shape=input_shape)
@@ -12,6 +11,7 @@ def build_model(input_shape = (224, 224, 3), n_classes=10):
     return tf.keras.Model(vgg.input, output, name=f"OxfordFlowers102-{vgg.name}")
 
 if __name__ == "__main__":
+    import tensorflow_datasets as tfds
     # tf setup
     devices = tf.config.list_physical_devices('GPU')
     tf.config.experimental.set_memory_growth(devices[0], True)

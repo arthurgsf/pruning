@@ -75,18 +75,6 @@ def dense_l1_norms(kernel_weights) -> np.ndarray:
 
 if __name__ == "__main__":
     # TFDS fornecer imagens do tipo tf.uint8 , enquanto o modelo de espera tf.float32 . Portanto, você precisa normalizar as imagens.
-    (ds_train, ds_test, ds_valid), ds_info = tfds.load(
-        "oxford_flowers102",
-        split=["train", "test", "validation"],
-        shuffle_files=True,
-        as_supervised=True,
-        with_info=True,
-    )
-
-    def normalize_img(image, label):
-        """Normalizes images: `uint8` -> `float32`."""
-        image = tf.image.resize_with_crop_or_pad(image, 224, 224)
-        return tf.cast(image, tf.float32) / 255.0, label
 
     ds_train = ds_train.map(normalize_img)
     ds_train = ds_train.shuffle(ds_info.splits["train"].num_examples)

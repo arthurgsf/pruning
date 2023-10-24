@@ -1,56 +1,53 @@
 import os
 import pickle
 import numpy as np
-import preprocessing
 from glob import glob
 import optuna as tuna
 import tensorflow as tf
 from model import EfficientUnet
 import segmentation_models as sm
-from generators import RandomPatientSliceGenerator, PerPatientSliceGenerator
+from segthor_generators import RandomPatientSliceGenerator, PatientSliceGenerator
+from config import args
+import tfpreprocessing as tfp
+import preprocessing as pre
+import utils
 
-DATASET_PATH = f"{os.path.expanduser('~')}/Datasets/segthor_extracted"
-IMG_SHAPE = (256, 256)
-N_CHANNELS = 1
-INPUT_SHAPE = IMG_SHAPE + (N_CHANNELS,)
-N_CLASSES = 1
-OUTPUT_SHAPE = IMG_SHAPE + (N_CLASSES,)
-BATCH_SIZE = 20
-EPOCHS = 100
 
-def model_path(model:tf.keras.Model, trial:tuna.Trial):
-    return f"opt_records/{model.name}/{trial.number}/"
-
-def train(trial:tuna.Trial, preprocessing_pipeline):
+def train(trial, preprocessing_pipeline):
     # split : train/val
-    tmp_train_patients = glob(f"{DATASET_PATH}/train/Patient*/")
+    tmp_train_patients = glob(f"{args.train_dir}/Patient*/")
     idx_train = int(len(tmp_train_patients)*0.9)
     train_patients = tmp_train_patients[:idx_train] # ~90% da base (25 pacientes)
-    val_patients = tmp_train_patients[idx_train + 1:] # ~10% da base (3 pacientes)
+    val_patients = tmp_train_patients[idx_train:] # ~10% da base (3 pacientes)
 
-    # generators
+    # generators setup
     train_dataset = tf.data.Dataset.from_generator(
         RandomPatientSliceGenerator(train_patients, preprocessing_pipeline),
         output_signature =
         (
-            tf.TensorSpec(shape=INPUT_SHAPE),
-            tf.TensorSpec(shape=OUTPUT_SHAPE)
+            tf.TensorSpec(shape=args.image_shape + (args.n_channels,)),
+            tf.TensorSpec(shape=args.image_shape + (args.n_classes,)),
+            tf.TensorSpec(shape=(2,))
         ),
-    ).batch(BATCH_SIZE)
+    ).batch(args.batch_size)
 
     val_dataset = tf.data.Dataset.from_generator(
         RandomPatientSliceGenerator(val_patients, preprocessing_pipeline),
         output_signature=
         (
-            tf.TensorSpec(shape=INPUT_SHAPE),
-            tf.TensorSpec(shape=OUTPUT_SHAPE)
+            tf.TensorSpec(shape=args.image_shape + (args.n_channels,)),
+            tf.TensorSpec(shape=args.image_shape + (args.n_classes,)),
+            tf.TensorSpec(shape=(2,))
         )
-    ).batch(BATCH_SIZE)
+    ).batch(args.batch_size)
 
     # model setup
-    model = EfficientUnet(input_shape = INPUT_SHAPE)
+    model = EfficientUnet(
+        input_shape = args.input_shape + (args.n_channels,),
+        n_classes = args.n_classes
+    )
 
-    # metrics
+    # metrics setup
     lr = trial.suggest_float("learning_rate", 0.0001, 0.001)
     optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
     precision_score = tf.keras.metrics.Precision(name="precision", thresholds=0.5)
@@ -58,10 +55,11 @@ def train(trial:tuna.Trial, preprocessing_pipeline):
     f_score = sm.metrics.FScore(threshold=0.5)
     iou_score = sm.metrics.IOUScore(threshold=0.5)
 
-    # callbacks
-    MODEL_PATH = model_path(model, trial)
+    # callbacks setup
+    MODEL_PATH = utils.model_path(model, trial)
     CHECKPOINT_PATH = f"{MODEL_PATH}/checkpoint"
     os.makedirs(CHECKPOINT_PATH, exist_ok=True)
+    
     checkpoint = tf.keras.callbacks.ModelCheckpoint(
         f"{CHECKPOINT_PATH}/{model.name}",
         monitor = 'val_loss',
@@ -74,11 +72,18 @@ def train(trial:tuna.Trial, preprocessing_pipeline):
     lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
         monitor="val_loss",
         mode='min',
-        factor=0.3,
-        patience=5,
-        cooldown=5,
-        min_lr = 0.00001,
-        min_delta=0.01
+        factor      =   0.1,
+        patience    =   5,
+        cooldown    =   5,
+        min_lr      =   0.000001,
+        min_delta   =   0.001
+    )
+
+    early_stopping = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss',
+        mode='min',
+        min_delta=0.001,
+        patience=10
     )
 
     # compile
@@ -93,22 +98,19 @@ def train(trial:tuna.Trial, preprocessing_pipeline):
                 f_score,      
             ])
 
-    # fit
     H = model.fit(
         train_dataset,
         validation_data=val_dataset,
-        epochs=EPOCHS,
-        callbacks=[checkpoint, lr_scheduler],
-        verbose=0)
+        epochs=args.epochs,
+        callbacks=[checkpoint, lr_scheduler, early_stopping]
+        )
     
-    with open(MODEL_PATH + "/history", "wb") as f:
-        pickle.dump(H.history, f)
+    utils.save_history(H.history, MODEL_PATH)
 
     return model
 
-
 def test(model, trial, preprocessing_pipeline):
-    MODEL_PATH = model_path(model, trial)
+    MODEL_PATH = utils.get_model_path(model, trial)
     model.load_weights(f"{MODEL_PATH}/checkpoint/{model.name}")
 
     dice_score = sm.metrics.FScore(threshold=0.5)
@@ -123,15 +125,15 @@ def test(model, trial, preprocessing_pipeline):
         "iou_score":[],
     }
 
-    patients_test = glob(DATASET_PATH + '/test/*')
+    patients_test = glob(args.test_dir + '/*')
 
     for patient in patients_test:
         patient_dataset = tf.data.Dataset.from_generator(
-            PerPatientSliceGenerator(patient, preprocessing_pipeline),
+            PatientSliceGenerator(patient, preprocessing_pipeline),
             output_signature=
             (
-                tf.TensorSpec(shape=INPUT_SHAPE, dtype=tf.float32),
-                tf.TensorSpec(shape=OUTPUT_SHAPE, dtype=tf.float32)
+                tf.TensorSpec(shape=args.input_shape + (args.n_channels,), dtype=tf.float32),
+                tf.TensorSpec(shape=args.input_shape + (args.n_classes), dtype=tf.float32)
             )
         )
 
@@ -148,26 +150,29 @@ def test(model, trial, preprocessing_pipeline):
         metrics["recall"].append(recall_score(volume_true, volume_pred))
         metrics["iou_score"].append(iou_score(volume_true, volume_pred))
 
-    with open(f"{MODEL_PATH}/test_metrics", "wb") as f:
-        pickle.dump(metrics, f)
+    utils.store_test_metrics(metrics, MODEL_PATH)
     
     return np.mean(metrics["dice"])
 
 def obj(trial:tuna.Trial):
 
     # hyper-parameters
-    lower_bound = trial.suggest_int("lower_bound", -500, 0)
+    lower_bound = trial.suggest_int("lower_bound", -100, 0)
     upper_bound = trial.suggest_int("upper_bound", 1, 80)
 
-    preprocessing_pipeline = preprocessing.Pipeline([
-        preprocessing.windowing(lower_bound, upper_bound),
-        preprocessing.norm, 
-        preprocessing.resize(IMG_SHAPE),
-        preprocessing.expand_dims
+    preprocessing_pipeline = tfp.Pipeline([
+        pre.windowing(lower_bound, upper_bound),
+        pre.resize(args.input_shape),
+        pre.norm(),
+        pre.expand_dims()
     ])
 
     model = train(trial, preprocessing_pipeline)
     dice_score = test(model, trial, preprocessing_pipeline)
+
+    with open(f"{utils.get_model_path(model, trial)}/params", "rb") as f:
+        pickle.dump(trial.params, f)
+
     return dice_score
 
 if __name__ == "__main__":
@@ -176,4 +181,4 @@ if __name__ == "__main__":
     tf.config.experimental.set_memory_growth(devices[0], True)
 
     study = tuna.create_study(direction="maximize")
-    study.optimize(obj, n_trials=100)
+    study.optimize(obj, n_trials=args.opt_epochs)

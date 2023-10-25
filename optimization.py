@@ -12,7 +12,6 @@ import tfpreprocessing as tfp
 import preprocessing as pre
 import utils
 
-
 def train(trial, preprocessing_pipeline):
     # split : train/val
     tmp_train_patients = glob(f"{args.train_dir}/Patient*/")
@@ -26,8 +25,7 @@ def train(trial, preprocessing_pipeline):
         output_signature =
         (
             tf.TensorSpec(shape=args.image_shape + (args.n_channels,)),
-            tf.TensorSpec(shape=args.image_shape + (args.n_classes,)),
-            tf.TensorSpec(shape=(2,))
+            tf.TensorSpec(shape=args.image_shape + (args.n_classes,))
         ),
     ).batch(args.batch_size)
 
@@ -36,8 +34,7 @@ def train(trial, preprocessing_pipeline):
         output_signature=
         (
             tf.TensorSpec(shape=args.image_shape + (args.n_channels,)),
-            tf.TensorSpec(shape=args.image_shape + (args.n_classes,)),
-            tf.TensorSpec(shape=(2,))
+            tf.TensorSpec(shape=args.image_shape + (args.n_classes,))
         )
     ).batch(args.batch_size)
 
@@ -56,7 +53,7 @@ def train(trial, preprocessing_pipeline):
     iou_score = sm.metrics.IOUScore(threshold=0.5)
 
     # callbacks setup
-    MODEL_PATH = utils.model_path(model, trial)
+    MODEL_PATH = utils.get_model_path(model, trial)
     CHECKPOINT_PATH = f"{MODEL_PATH}/checkpoint"
     os.makedirs(CHECKPOINT_PATH, exist_ok=True)
     
@@ -88,21 +85,22 @@ def train(trial, preprocessing_pipeline):
 
     # compile
     model.compile(optimizer, 
-            loss      =   sm.losses.DiceLoss(),
-            metrics   =   [
-                precision_score,
-                recall_score,
-            ],
-            weighted_metrics = [
-                iou_score,
-                f_score,      
-            ])
+        loss      =   sm.losses.DiceLoss(),
+        metrics   =   [
+            precision_score,
+            recall_score,
+        ],
+        weighted_metrics = [
+            iou_score,
+            f_score,      
+    ])
 
     H = model.fit(
         train_dataset,
         validation_data=val_dataset,
         epochs=args.epochs,
-        callbacks=[checkpoint, lr_scheduler, early_stopping]
+        callbacks=[checkpoint, lr_scheduler, early_stopping],
+        verbose=0
         )
     
     utils.save_history(H.history, MODEL_PATH)
@@ -133,7 +131,7 @@ def test(model, trial, preprocessing_pipeline):
             output_signature=
             (
                 tf.TensorSpec(shape=args.input_shape + (args.n_channels,), dtype=tf.float32),
-                tf.TensorSpec(shape=args.input_shape + (args.n_classes), dtype=tf.float32)
+                tf.TensorSpec(shape=args.input_shape + (args.n_classes,), dtype=tf.float32)
             )
         )
 
@@ -155,7 +153,6 @@ def test(model, trial, preprocessing_pipeline):
     return np.mean(metrics["dice"])
 
 def obj(trial:tuna.Trial):
-
     # hyper-parameters
     lower_bound = trial.suggest_int("lower_bound", -100, 0)
     upper_bound = trial.suggest_int("upper_bound", 1, 80)
@@ -170,7 +167,7 @@ def obj(trial:tuna.Trial):
     model = train(trial, preprocessing_pipeline)
     dice_score = test(model, trial, preprocessing_pipeline)
 
-    with open(f"{utils.get_model_path(model, trial)}/params", "rb") as f:
+    with open(f"{utils.get_model_path(model, trial)}params", "wb") as f:
         pickle.dump(trial.params, f)
 
     return dice_score
